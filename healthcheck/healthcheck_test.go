@@ -10,7 +10,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/cloudfoundry-incubator/galera-healthcheck/healthcheck"
+	"github.com/BrandYourself/galera-healthcheck/healthcheck"
 )
 
 var _ = Describe("GaleraHealthChecker", func() {
