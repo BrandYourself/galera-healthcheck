@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/urfave/cli/v2"
 	"github.com/mingcheng/pidfile"
@@ -73,11 +75,23 @@ func main() {
 			},
 		},
 		Action: func(c *cli.Context) error {
-			if pid, err := pidfile.New(pidfilePath); err != nil {
+			pid, err := pidfile.New(pidfilePath)
+			if err != nil {
 				return cli.Exit(fmt.Sprintf("Error creating pid file: %+v", err), 1)
-			} else {
-				defer pid.Remove()
 			}
+
+			// Create a channel to listen for signals
+			sigs := make(chan os.Signal, 1)
+
+			// Notify the channel on receiving a SIGINT or SIGTERM
+			signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+			// Run a background handler that will remove the pidfile on getting a signal
+			go func() {
+				<-sigs
+				pid.Remove()
+				os.Exit(1)
+			}()
 
 			db, _ := sql.Open("mysql", fmt.Sprintf("%s:%s@/", mysqlUser, mysqlPassword))
 			config := healthcheck.HealthcheckerConfig{
@@ -103,6 +117,8 @@ func main() {
 
 			serverPort := c.Int("port")
 			http.ListenAndServe(fmt.Sprintf(":%d", serverPort), nil)
+
+			pid.Remove()
 
 			return nil
 		},
