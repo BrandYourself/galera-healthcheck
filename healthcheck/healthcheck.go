@@ -1,6 +1,7 @@
 package healthcheck
 
 import (
+	"fmt"
 	"database/sql"
 )
 
@@ -22,7 +23,17 @@ type HealthcheckerConfig struct {
 }
 
 type HealthResult struct {
-	Healthy bool
+	Healthy             bool   `json:healthy`
+	ClusterConfId       string `json:wsrep_cluster_conf_id`
+	ClusterSize         string `json:wsrep_cluster_size`
+	ClusterStateUUID    string `json:wsrep_cluster_state_uuid`
+	ClusterStatus       string `json:wsrep_cluster_status`
+	Connected           string `json:wsrep_connected`
+	LocalState          string `json:wsrep_local_state`
+	LocalStateComment   string `json:wsrep_local_state_comment`
+	Messages          []string `json:messages`
+	ReadOnly            string `json:read_only`
+	Ready               string `json:wsrep_ready`
 }
 
 func New(db *sql.DB, config HealthcheckerConfig) *Healthchecker {
@@ -32,41 +43,54 @@ func New(db *sql.DB, config HealthcheckerConfig) *Healthchecker {
 	}
 }
 
-var was_joined = false
-var old_state = "0"
-
-func (h *Healthchecker) Check() (*HealthResult, string) {
+func (h *Healthchecker) Check() *HealthResult {
 	var variable_name string
-	var state string
-	err := h.db.QueryRow("SHOW STATUS LIKE 'wsrep_local_state'").Scan(&variable_name, &state)
+	var result = &HealthResult{Messages:make([]string, 0)}
 
-	var res, msg = &HealthResult{Healthy: false}, "not synced"
-	switch {
-	case err != nil:
-		res, msg = &HealthResult{Healthy: false}, err.Error()
-	case state != SYNCED_STATE && !was_joined:
-		if old_state == JOINED_STATE && state != JOINED_STATE {
-			res, msg = &HealthResult{Healthy: false}, "no synced"
-			was_joined = true
-		} else {
-			res, msg = nil, "syncing"
-		}
-	case state == SYNCED_STATE || (state == DONOR_DESYNCED_STATE && h.config.AvailableWhenDonor):
-		was_joined = true
-		res, msg = &HealthResult{Healthy: true}, "synced"
-		if !h.config.AvailableWhenReadOnly {
-			var ro_variable_name string
-			var ro_value string
-			ro_err := h.db.QueryRow("SHOW GLOBAL VARIABLES LIKE 'read_only'").Scan(&ro_variable_name, &ro_value)
-			switch {
-			case ro_err != nil:
-				res, msg = &HealthResult{Healthy: false}, ro_err.Error()
-			case ro_value == "ON":
-				res, msg = &HealthResult{Healthy: false}, "read-only"
+	var statusValues = map[string]*string{
+		"wsrep_local_state": &result.LocalState,
+		"wsrep_local_state_comment": &result.LocalStateComment,
+		"wsrep_cluster_conf_id": &result.ClusterConfId,
+		"wsrep_cluster_size": &result.ClusterSize,
+		"wsrep_cluster_state_uuid": &result.ClusterStateUUID,
+		"wsrep_cluster_status": &result.ClusterStatus,
+		"wsrep_connected": &result.Connected,
+		"wsrep_ready": &result.Ready,
+	}
+
+	for key := range statusValues {
+		err := h.db.QueryRow(fmt.Sprintf("SHOW STATUS LIKE '%s'", key)).Scan(&variable_name, statusValues[key])
+		if err != nil {
+			if (err.Error() == "sql: no rows in result set") {
+				*statusValues[key] = "--"
+			} else {
+				result.Messages = append(result.Messages, fmt.Sprintf("Could not get %s value: %s", key, err.Error()))
 			}
 		}
 	}
-	
-	old_state = state
-	return res, msg
+
+	err := h.db.QueryRow("SHOW GLOBAL VARIABLES LIKE 'read_only'").Scan(&variable_name, &result.ReadOnly)
+	if err != nil {
+		if (err.Error() == "sql: no rows in result set") {
+			result.ReadOnly = "--"
+		} else {
+			result.Messages = append(result.Messages, fmt.Sprintf("Could not get read_only value: %s", err.Error()))
+		}
+	}
+
+	if len(result.Messages) == 0 &&
+	   (result.LocalState == SYNCED_STATE || (result.LocalState == DONOR_DESYNCED_STATE && h.config.AvailableWhenDonor)) {
+		if (result.ClusterStatus == "Primary") {
+			result.Healthy = true
+		} else {
+			result.Messages = append(result.Messages, "Node is not part of the primary component!")
+		}
+
+		if !h.config.AvailableWhenReadOnly && result.ReadOnly == "ON" {
+			result.Healthy = false
+			result.Messages = append(result.Messages, "Node is read-only")
+		}
+	}
+
+	return result
 }

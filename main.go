@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,7 +13,6 @@ import (
 	"github.com/urfave/cli/v2"
 	"github.com/mingcheng/pidfile"
 	"github.com/BrandYourself/galera-healthcheck/healthcheck"
-	. "github.com/BrandYourself/galera-healthcheck/logger"
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -102,20 +102,24 @@ func main() {
 			healthchecker = healthcheck.New(db, config)
 
 			http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-				result, msg := healthchecker.Check()
-				if result != nil && result.Healthy {
+				w.Header().Set("Content-Type", "application/json")
+
+				result := healthchecker.Check()
+				if result.Healthy {
 					w.WriteHeader(http.StatusOK)
-				} else if result != nil && !result.Healthy {
-					w.WriteHeader(http.StatusServiceUnavailable)
 				} else {
-					w.WriteHeader(http.StatusContinue)
+					w.WriteHeader(http.StatusServiceUnavailable)
 				}
 
-				fmt.Fprintf(w, "Galera Cluster Node status: %s", msg)
-				LogWithTimestamp(msg)
+				jsonContent, err := json.Marshal(result)
+				if err != nil {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					fmt.Fprintf(w, "Error while encoding JSON response: %s", err.Error())
+				}
+
+				fmt.Fprintf(w, string(jsonContent))
 			})
 
-			serverPort := c.Int("port")
 			http.ListenAndServe(fmt.Sprintf(":%d", serverPort), nil)
 
 			pid.Remove()
